@@ -3,14 +3,18 @@ name: Build and Push Docker image
 on:
   push:
     branches: [ main ]
+    tags: [ '*' ]
     paths:
       - Dockerfile
       - .github/workflows/publish.yml
       - '**/*.sh'
+  delete:
+    tags: [ '*' ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: github.event_name != 'delete'  # Skip on tag delete
 
     permissions:
       contents: read
@@ -27,9 +31,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract image tag
+        id: vars
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=latest" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/my-container-app:latest
+          tags: ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
+
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'delete' && github.event.ref_type == 'tag'
+
+    permissions:
+      packages: write
+
+    steps:
+      - name: Delete image tag from GHCR
+        run: |
+          curl -X DELETE \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://ghcr.io/v2/${{ github.repository }}/manifests/$(\
+              curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              https://ghcr.io/v2/${{ github.repository }}/tags/list \
+              | jq -r '.tags[]' \
+              | grep "^${GITHUB_REF#refs/tags/}$" \
+              | xargs -I {} curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+                  https://ghcr.io/v2/${{ github.repository }}/manifests/{} \
+                  | jq -r '.config.digest')
