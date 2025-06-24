@@ -47,6 +47,32 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
 
+      - name: Prune old 'latest' images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}"
+          N=3  # number of latest images to keep
+
+          # Fetch all versions of 'latest'
+          gh api -H "Accept: application/vnd.github.v3+json" \
+            /users/${{ github.repository_owner }}/packages/container/$(basename "$IMAGE")/versions \
+            | jq '[.[] | select(.metadata.container.tags | index("latest"))]' > versions.json
+
+          COUNT=$(jq length versions.json)
+
+          if [ "$COUNT" -le "$N" ]; then
+            echo "Nothing to prune (found $COUNT latest images)"
+            exit 0
+          fi
+
+          # Delete oldest ones
+          jq ".[${N}:] | .[].id" versions.json | while read -r id; do
+            echo "Deleting old image version ID: $id"
+            gh api -X DELETE \
+              /users/${{ github.repository_owner }}/packages/container/$(basename "$IMAGE")/versions/$id
+          done
+
   cleanup:
     runs-on: ubuntu-latest
     if: github.event_name == 'delete' && github.event.ref_type == 'tag'
